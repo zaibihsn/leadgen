@@ -31,22 +31,13 @@ async def scrape_google_maps(queries, strategy="Fast (Default)", max_results=50,
         logger.info("🐧 Linux detected and binary missing. Downloading Nitro Engine...")
         try:
             os.makedirs(os.path.dirname(binary_path), exist_ok=True)
-            url = "https://github.com/gosom/google-maps-scraper/releases/download/v1.10.1/google_maps_scraper-1.10.1-linux-amd64.tar.gz"
-            tar_path = os.path.join(base_dir, "gosom_scraper", "engine.tar.gz")
-            urllib.request.urlretrieve(url, tar_path)
+            # Correct direct download URL from GitHub
+            url = f"https://github.com/gosom/google-maps-scraper/releases/download/v1.10.1/{binary_name}"
+            urllib.request.urlretrieve(url, binary_path)
             
-            with tarfile.open(tar_path, "r:gz") as tar:
-                # The binary inside is named 'google_maps_scraper'
-                tar.extractall(path=os.path.join(base_dir, "gosom_scraper"))
-            
-            # Find the extracted file (it might have a different name)
-            extracted_path = os.path.join(base_dir, "gosom_scraper", "google_maps_scraper")
-            if os.path.exists(extracted_path):
-                os.rename(extracted_path, binary_path)
-                os.chmod(binary_path, 0o755)
-                logger.info("✅ Nitro Engine installed successfully.")
-            
-            os.remove(tar_path)
+            # Set executable permissions
+            os.chmod(binary_path, 0o755)
+            logger.info("✅ Nitro Engine installed successfully.")
         except Exception as e:
             logger.error(f"❌ Failed to download Nitro Engine: {e}")
             return pd.DataFrame()
