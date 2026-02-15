@@ -374,7 +374,7 @@ def main():
             webs = len(df[df['Website'].astype(str).str.contains('http', na=False)]) if 'Website' in df.columns else 0
             m4.metric("Websites Found", webs)
 
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
             st.markdown(get_csv_download_link(df), unsafe_allow_html=True)
         else:
             st.warning("🕵️ No data in warehouse. Please run an extraction first.")
