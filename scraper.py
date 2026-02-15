@@ -1,202 +1,99 @@
 import asyncio
+from playwright.async_api import async_playwright
 import pandas as pd
 import logging
-import sys
-import os
-import subprocess
-import json
-import tempfile
-import uuid
-import platform
-import urllib.request
-import tarfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-async def scrape_google_maps(queries, strategy="Fast (Default)", max_results=50, website_required="Either", phone_required="Either"):
+async def scrape_google_maps(cities, query_type="manufacturers", max_results=50):
     """
-    Subprocess wrapper for gosom/google-maps-scraper Go binary.
-    Auto-detects OS and downloads Linux binary if running on Streamlit Cloud.
+    Scrapes Google Maps for businesses in specific cities that do NOT have a website.
     """
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    is_linux = platform.system().lower() == "linux"
+    all_results = []
     
-    binary_name = "gmaps_scraper" if is_linux else "gmaps_scraper.exe"
-    binary_path = os.path.join(base_dir, "gosom_scraper", binary_name)
-    
-    # Auto-download for Linux (Streamlit Cloud)
-    if is_linux and not os.path.exists(binary_path):
-        logger.info("🐧 Linux detected and binary missing. Downloading Nitro Engine...")
-        try:
-            os.makedirs(os.path.dirname(binary_path), exist_ok=True)
-            # Use the EXACT asset name from GitHub releases
-            asset_name = "google_maps_scraper-1.10.1-linux-amd64"
-            url = f"https://github.com/gosom/google-maps-scraper/releases/download/v1.10.1/{asset_name}"
-            urllib.request.urlretrieve(url, binary_path)
-            
-            # Set executable permissions
-            os.chmod(binary_path, 0o755)
-            logger.info("✅ Nitro Engine installed successfully.")
-        except Exception as e:
-            logger.error(f"❌ Failed to download Nitro Engine: {e}")
-            return pd.DataFrame()
-
-    if not os.path.exists(binary_path):
-        logger.error(f"❌ Critical Error: Nitro Engine not found at {binary_path}")
-        return pd.DataFrame()
-
-    # Strategy Mapping
-    depth = 10
-    fast_mode = False
-    zoom = 15
-    
-    if strategy == "Fastest":
-        depth = 1
-        fast_mode = False # Keep False unless we have geo coordinates
-    elif strategy == "Detailed":
-        depth = 30
-    elif "Zoom" in strategy:
-        try:
-            zoom = int(strategy.split(" ")[1])
-            depth = 15
-        except: pass
-
-    # Prepare local temp directory to avoid permission issues
-    tmp_dir = os.path.join(base_dir, ".tmp")
-    if not os.path.exists(tmp_dir):
-        os.makedirs(tmp_dir, exist_ok=True)
-
-    # Prepare input file (Unique per call)
-    run_id = str(uuid.uuid4())[:8]
-    input_file_path = os.path.join(tmp_dir, f"gmaps_q_{run_id}.txt")
-    with open(input_file_path, 'w', encoding='utf-8') as f:
-        f.write("\n".join(queries))
-
-    # Prepare output file
-    output_file_path = os.path.join(tmp_dir, f"gmaps_r_{run_id}.json")
-    if os.path.exists(output_file_path): os.remove(output_file_path)
-    
-    # CLI Command Construction
-    cmd = [
-        binary_path,
-        "-input", input_file_path,
-        "-results", output_file_path,
-        "-json",
-        "-depth", str(depth),
-        "-c", "4",
-        "-exit-on-inactivity", "2m"
-    ]
-    
-    if fast_mode:
-        cmd.append("-fast-mode")
-    if "Zoom" in strategy:
-        cmd.extend(["-zoom", str(zoom)])
-
-    logger.info(f"🚀 Launching Go Engine: {' '.join(cmd)}")
-    logger.info(f"📍 Params -> Depth: {depth}, Strategy: {strategy}, Input: {input_file_path}")
-    
-    try:
-        # Run the binary as async subprocess
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         )
-        
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            err_msg = stderr.decode()[:1000]
-            logger.error(f"❌ Go Engine failed (Code {process.returncode}): {err_msg}")
-            return pd.DataFrame()
+        page = await context.new_page()
 
-        # Load results
-        if os.path.exists(output_file_path):
-            results = []
+        for city in cities:
+            search_query = f"{query_type} in {city}"
+            logger.info(f"Searching for: {search_query}")
+            
+            await page.goto(f"https://www.google.com/maps/search/{search_query.replace(' ', '+')}")
+            
+            # Wait for results to load
             try:
-                # Try reading line-separated JSON first (standard for this scraper)
-                with open(output_file_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            try:
-                                results.append(json.loads(line))
-                            except: pass
+                await page.wait_for_selector('div[role="feed"]', timeout=10000)
+            except:
+                logger.warning(f"No feed found for {city}. Might be zero results or different layout.")
+                continue
+
+            # Scrolling logic to load more results
+            last_height = 0
+            results_found = 0
+            
+            while results_found < max_results:
+                # Scroll the feed
+                await page.mouse.move(500, 500) # Move to the results area
+                await page.mouse.wheel(0, 2000)
+                await asyncio.sleep(2)
                 
-                # If nothing found, try reading as a single JSON array
-                if not results:
-                    with open(output_file_path, 'r', encoding='utf-8') as f:
-                        content = f.read().strip()
-                        if content:
-                            try:
-                                results = json.loads(content)
-                            except: pass
-            except Exception as e:
-                logger.error(f"❌ Parsing Error: {e}")
-            
-            if not isinstance(results, list):
-                results = [results] if results else []
+                # Check for "You've reached the end of the list" or similar
+                # For now, we just count results found
+                listings = await page.query_selector_all('div[role="article"]')
+                if len(listings) == results_found:
+                    break # No more results loading
+                results_found = len(listings)
+                logger.info(f"Loading results... {results_found} found so far.")
 
-            logger.info(f"📈 Raw results captured: {len(results)}")
-            df = pd.DataFrame(results)
-            if df.empty: return df
+            # Extract data from loaded listings
+            listings = await page.query_selector_all('div[role="article"]')
+            for listing in listings:
+                try:
+                    # Click listing to see details (sometimes needed for website info)
+                    # For performance, we first try to find website from the list view
+                    
+                    name_el = await listing.query_selector('div.fontHeadlineSmall')
+                    name = await name_el.inner_text() if name_el else "Unknown"
+                    
+                    rating_el = await listing.query_selector('span.MW4etd')
+                    rating = await rating_el.inner_text() if rating_el else "0"
+                    
+                    reviews_el = await listing.query_selector('span.Uy7F9')
+                    reviews = await reviews_el.inner_text() if reviews_el else "0"
+                    reviews = reviews.replace('(', '').replace(')', '').replace(',', '')
+                    
+                    # Look for website link in the article
+                    website_el = await listing.query_selector('a[aria-label*="website"]')
+                    website = await website_el.get_attribute('href') if website_el else None
+                    
+                    if not website:
+                        all_results.append({
+                            'Company Name': name,
+                            'Stars': float(rating) if rating != "Unknown" else 0.0,
+                            'Reviews': int(reviews) if reviews.isdigit() else 0,
+                            'City': city,
+                            'Website': 'None'
+                        })
+                except Exception as e:
+                    logger.error(f"Error processing a listing: {e}")
 
-            # Field Mapping
-            mapping = {
-                'title': 'Business Name',
-                'review_rating': 'Stars',
-                'review_count': 'Reviews',
-                'phone': 'Phone',
-                'web_site': 'Website',
-                'category': 'Category',
-                'address': 'Address'
-            }
-            cols = {k: v for k, v in mapping.items() if k in df.columns}
-            df = df.rename(columns=cols)
-            
-            # Standardization
-            for col in ['Website', 'Phone']:
-                if col not in df.columns: df[col] = ""
-            df['Website'] = df['Website'].fillna("")
-            df['Phone'] = df['Phone'].fillna("")
-
-            # Filtering
-            pre_filter = len(df)
-            logger.info(f"🧪 Applying Filters -> Web: {website_required}, Phone: {phone_required}")
-            
-            if website_required == "Has Website":
-                df = df[df['Website'].astype(str).str.contains('http', na=False)]
-            elif website_required == "No Website":
-                df = df[~df['Website'].astype(str).str.contains('http', na=False)]
-                
-            if phone_required == "Has Phone":
-                df = df[df['Phone'].astype(str).str.len() > 5]
-            elif phone_required == "No Phone":
-                df = df[df['Phone'].astype(str).str.len() <= 5]
-
-            # Capping results
-            if max_results and len(df) > max_results:
-                df = df.head(max_results)
-
-            logger.info(f"🎯 Final Dataframe Size: {len(df)} (Filtered: {pre_filter - len(df)})")
-            return df
-        
-    except Exception as e:
-        logger.error(f"❌ Subprocess Exception: {e}")
-    finally:
-        # Cleanup
-        try:
-            if os.path.exists(input_file_path): os.remove(input_file_path)
-            if os.path.exists(output_file_path): os.remove(output_file_path)
-        except: pass
-
-    return pd.DataFrame()
+        await browser.close()
+    
+    # Sort results
+    df = pd.DataFrame(all_results)
+    if not df.empty:
+        df = df.sort_values(by=['Stars', 'Reviews'], ascending=False)
+    
+    return df
 
 if __name__ == "__main__":
-    # Internal test
-    async def test():
-        df = await scrape_google_maps(["Restaurant in Gujranwala"], strategy="Fastest")
-        print(df.head())
-    asyncio.run(test())
+    # Test run
+    test_cities = ["Trenton"]
+    results = asyncio.run(scrape_google_maps(test_cities, max_results=10))
+    print(results)
