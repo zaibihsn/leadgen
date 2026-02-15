@@ -1,0 +1,8 @@
+.tmp/
+__pycache__/
+*.exe
+*.log
+*.csv
+*.json
+.streamlit/
+!gosom_scraper/gmaps_scraper.exe
