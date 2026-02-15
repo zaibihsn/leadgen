@@ -31,8 +31,9 @@ async def scrape_google_maps(queries, strategy="Fast (Default)", max_results=50,
         logger.info("🐧 Linux detected and binary missing. Downloading Nitro Engine...")
         try:
             os.makedirs(os.path.dirname(binary_path), exist_ok=True)
-            # Correct direct download URL from GitHub
-            url = f"https://github.com/gosom/google-maps-scraper/releases/download/v1.10.1/{binary_name}"
+            # Use the EXACT asset name from GitHub releases
+            asset_name = "google_maps_scraper-1.10.1-linux-amd64"
+            url = f"https://github.com/gosom/google-maps-scraper/releases/download/v1.10.1/{asset_name}"
             urllib.request.urlretrieve(url, binary_path)
             
             # Set executable permissions
